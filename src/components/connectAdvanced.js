@@ -5,13 +5,22 @@ import { polyfill } from 'react-lifecycles-compat'
 
 import Subscription from '../utils/Subscription'
 import { storeShape, subscriptionShape } from '../utils/PropTypes'
+import shallowEqual from '../utils/shallowEqual'
 
 let hotReloadingVersion = 0
+
 function noop() {}
-function makeUpdater(sourceSelector, store) {
-  return function updater(props, prevState) {
+
+function makeChildPropsSelector(sourceSelector) {
+  return function childPropsSelector(reduxStoreState, ownProps) {
     try {
-      const nextProps = sourceSelector(store.getState(), props)
+      const childProps = sourceSelector(reduxStoreState, ownProps)
+
+      return {
+        childProps,
+        error : null
+      }
+      /*
       if (nextProps !== prevState.props || prevState.error) {
         return {
           shouldComponentUpdate: true,
@@ -22,9 +31,10 @@ function makeUpdater(sourceSelector, store) {
       return {
         shouldComponentUpdate: false,
       }
+      */
     } catch (error) {
       return {
-        shouldComponentUpdate: true,
+        //shouldComponentUpdate: true,
         error,
       }
     }
@@ -88,8 +98,26 @@ export default function connectAdvanced(
     [subscriptionKey]: subscriptionShape,
   }
 
-  function getDerivedStateFromProps(nextProps, prevState) {
-    return prevState.updater(nextProps, prevState)
+  function getDerivedStateFromProps(currProps, currState) {
+    const {ownProps, childProps, reduxStoreState, childPropsSelector} = currState;
+
+    /*
+    if(shallowEqual(currProps, ownProps)) {
+      return null;
+    }
+    */
+
+    const {childProps : newChildProps, error} = childPropsSelector(reduxStoreState, currProps);
+
+    if(newChildProps === childProps && !error) {
+      return null;
+    }
+
+    return {
+      ownProps : currProps,
+      childProps : newChildProps,
+      error,
+    };
   }
 
   return function wrapWithConnect(WrappedComponent) {
@@ -134,9 +162,21 @@ export default function connectAdvanced(
           `or explicitly pass "${storeKey}" as a prop to "${displayName}".`
         )
 
+        const childPropsSelector = this.createChildPropsSelector()
+        const reduxStoreState = this.store.getState()
+
+        //const {childProps, error} = childPropsSelector(reduxStoreState, props)
+
         this.state = {
-          updater: this.createUpdater()
+          childPropsSelector,
+          ownProps : props,
+          childProps : {},
+          error : null,
+          reduxStoreState,
+          store : this.store,
+          displayName : Connect.displayName,
         }
+
         this.initSubscription()
       }
 
@@ -159,11 +199,11 @@ export default function connectAdvanced(
         // dispatching an action in its componentWillMount, we have to re-run the select and maybe
         // re-render.
         this.subscription.trySubscribe()
-        this.runUpdater()
+        this.checkForStoreStateChanges()
       }
 
       shouldComponentUpdate(_, nextState) {
-        return nextState.shouldComponentUpdate
+        return (nextState.childProps !== this.state.childProps || nextState.error);
       }
 
       componentWillUnmount() {
@@ -186,17 +226,37 @@ export default function connectAdvanced(
         this.wrappedInstance = ref
       }
 
-      createUpdater() {
+      createChildPropsSelector() {
         const sourceSelector = selectorFactory(this.store.dispatch, selectorFactoryOptions)
-        return makeUpdater(sourceSelector, this.store)
+        return makeChildPropsSelector(sourceSelector, this.store)
       }
 
-      runUpdater(callback = noop) {
+      checkForStoreStateChanges(callback = noop, forceRerender = false) {
         if (this.isUnmounted) {
           return
         }
 
-        this.setState(prevState => prevState.updater(this.props, prevState), callback)
+        const newReduxStoreState = this.state.store.getState();
+
+        this.setState(prevState => {
+          const {ownProps, childProps, reduxStoreState, childPropsSelector} = prevState
+
+          if(reduxStoreState === newReduxStoreState && !forceRerender) {
+            return null
+          }
+
+          const {childProps : newChildProps, error} = childPropsSelector(newReduxStoreState, ownProps)
+
+          if(newChildProps === childProps && !error && !forceRerender) {
+            return null
+          }
+
+          return {
+            reduxStoreState : newReduxStoreState,
+            childProps : newChildProps,
+            error
+          }
+        }, callback)
       }
 
       initSubscription() {
@@ -205,7 +265,7 @@ export default function connectAdvanced(
         // parentSub's source should match where store came from: props vs. context. A component
         // connected to the store via props shouldn't use subscription from context, or vice versa.
         const parentSub = (this.propsMode ? this.props : this.context)[subscriptionKey]
-        this.subscription = new Subscription(this.store, parentSub, this.onStateChange.bind(this))
+        this.subscription = new Subscription(this.store, parentSub, this.onSubscriptionTriggered.bind(this))
 
         // `notifyNestedSubs` is duplicated to handle the case where the component is  unmounted in
         // the middle of the notification loop, where `this.subscription` will then be null. An
@@ -216,8 +276,18 @@ export default function connectAdvanced(
         this.notifyNestedSubs = this.subscription.notifyNestedSubs.bind(this.subscription)
       }
 
-      onStateChange() {
-        this.runUpdater(this.notifyNestedSubs)
+      onSubscriptionTriggered() {
+        this.checkForStoreStateChanges(this.notifyNestedSubs)
+      }
+
+      notifyNestedSubsOnComponentDidUpdate() {
+        // `componentDidUpdate` is conditionally implemented when `onStateChange` determines it
+        // needs to notify nested subs. Once called, it unimplements itself until further state
+        // changes occur. Doing it this way vs having a permanent `componentDidUpdate` that does
+        // a boolean check every time avoids an extra method call most of the time, resulting
+        // in some perf boost.
+        this.componentDidUpdate = undefined
+        this.notifyNestedSubs()
       }
 
       isSubscribed() {
@@ -241,7 +311,7 @@ export default function connectAdvanced(
         if (this.state.error) {
           throw this.state.error
         } else {
-          return createElement(WrappedComponent, this.addExtraProps(this.state.props))
+          return createElement(WrappedComponent, this.addExtraProps(this.state.childProps))
         }
       }
     }
@@ -276,9 +346,10 @@ export default function connectAdvanced(
             oldListeners.forEach(listener => this.subscription.listeners.subscribe(listener))
           }
 
-          const updater = this.createUpdater()
-          this.setState({updater})
-          this.runUpdater()
+          //const updater = this.createChildPropsSelector()
+          const childPropsSelector = this.createChildPropsSelector()
+          this.setState({childPropsSelector})
+          this.checkForStoreStateChanges(this.notifyNestedSubs, true)
         }
       }
     }
