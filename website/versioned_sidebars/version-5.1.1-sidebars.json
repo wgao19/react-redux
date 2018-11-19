@@ -1,0 +1,19 @@
+{
+  "version-5.1.1-docs": {
+    "Introduction": [
+      "version-5.1.1-introduction/quick-start",
+      "version-5.1.1-introduction/basic-tutorial"
+    ],
+    "Using React-Redux": [
+      "version-5.1.1-using-react-redux/connect-extracting-data-with-mapStateToProps",
+      "version-5.1.1-using-react-redux/connect-dispatching-actions-with-mapDispatchToProps"
+    ],
+    "API Reference": [
+      "version-5.1.1-api",
+      "version-5.1.1-api/provider"
+    ],
+    "Guides": [
+      "version-5.1.1-troubleshooting"
+    ]
+  }
+}

@@ -83,7 +83,9 @@ const siteConfig = {
 
   // You may provide arbitrary config keys to be used as needed by your
   // template. For example, if you need your repo's URL...
-  repoUrl: "https://github.com/reduxjs/react-redux"
+  repoUrl: "https://github.com/reduxjs/react-redux",
+
+  nextVersion: "6.0.0-beta.1",
 };
 
 module.exports = siteConfig;
